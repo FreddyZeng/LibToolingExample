@@ -12,6 +12,8 @@ target_link_libraries(Example
   clangBasic
 clangDriver
 clangAST
+clangLex
+clangParse
   clangFrontend
   clangRewrite
   clangSerialization
