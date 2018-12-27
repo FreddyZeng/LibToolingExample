@@ -30,6 +30,7 @@ public:
     {
         rewriter.setSourceMgr(astContext->getSourceManager(), astContext->getLangOpts());
     }
+    virtual ~ExampleVisitor() {}
 
     virtual bool VisitFunctionDecl(FunctionDecl *func) {
         numFunctions++;
