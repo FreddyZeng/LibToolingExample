@@ -43,11 +43,11 @@ public:
 
     virtual bool VisitStmt(Stmt *st) {
         if (ReturnStmt *ret = dyn_cast<ReturnStmt>(st)) {
-            rewriter.ReplaceText(ret->getRetValue()->getLocStart(), 6, "val");
+            rewriter.ReplaceText(ret->getRetValue()->getBeginLoc(), 6, "val");
             errs() << "** Rewrote ReturnStmt\n";
         }        
         if (CallExpr *call = dyn_cast<CallExpr>(st)) {
-            rewriter.ReplaceText(call->getLocStart(), 7, "add5");
+            rewriter.ReplaceText(call->getBeginLoc(), 7, "add5");
             errs() << "** Rewrote function call\n";
         }
         return true;
@@ -104,8 +104,8 @@ public:
 
 class ExampleFrontendAction : public ASTFrontendAction {
 public:
-    virtual ASTConsumer *CreateASTConsumer(CompilerInstance &CI, StringRef file) {
-        return new ExampleASTConsumer(&CI); // pass CI pointer to ASTConsumer
+    virtual std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI, StringRef file) {
+        return (std::unique_ptr<ASTConsumer>)new ExampleASTConsumer(&CI); // pass CI pointer to ASTConsumer
     }
 };
 
@@ -113,12 +113,12 @@ public:
 
 int main(int argc, const char **argv) {
     // parse the command-line args passed to your code
-    CommonOptionsParser op(argc, argv);        
+    CommonOptionsParser op(argc, argv, *new llvm::cl::OptionCategory("test"));
     // create a new Clang Tool instance (a LibTooling environment)
     ClangTool Tool(op.getCompilations(), op.getSourcePathList());
 
     // run the Clang Tool, creating a new FrontendAction (explained below)
-    int result = Tool.run(newFrontendActionFactory<ExampleFrontendAction>());
+    int result = Tool.run(newFrontendActionFactory<ExampleFrontendAction>().get());
 
     errs() << "\nFound " << numFunctions << " functions.\n\n";
     // print out the rewritten source code ("rewriter" is a global var.)
