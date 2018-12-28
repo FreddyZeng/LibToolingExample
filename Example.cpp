@@ -1,39 +1,42 @@
-//------------------------------------------------------------------------------
-// Clang rewriter sample. Demonstrates:
-//
-// * How to use RecursiveASTVisitor to find interesting AST nodes.
-// * How to use the Rewriter API to rewrite the source code.
-//
-// Eli Bendersky (eliben@gmail.com)
-// This code is in the public domain
-//------------------------------------------------------------------------------
+#include "clang/Driver/Options.h"
+#include "clang/AST/AST.h"
+#include "clang/AST/ASTContext.h"
+#include "clang/AST/ASTConsumer.h"
+#include "clang/AST/RecursiveASTVisitor.h"
+#include "clang/Frontend/ASTConsumers.h"
+#include "clang/Frontend/FrontendActions.h"
+#include "clang/Frontend/CompilerInstance.h"
+#include "clang/Tooling/CommonOptionsParser.h"
+#include "clang/Tooling/Tooling.h"
+#include "clang/Rewrite/Core/Rewriter.h"
+
 #include <cstdio>
 #include <memory>
 #include <sstream>
 #include <string>
 
-#include "clang/AST/ASTConsumer.h"
-#include "clang/AST/RecursiveASTVisitor.h"
-#include "clang/Basic/Diagnostic.h"
-#include "clang/Basic/FileManager.h"
-#include "clang/Basic/SourceManager.h"
-#include "clang/Basic/TargetInfo.h"
-#include "clang/Basic/TargetOptions.h"
-#include "clang/Frontend/CompilerInstance.h"
-#include "clang/Lex/Preprocessor.h"
-#include "clang/Parse/ParseAST.h"
-#include "clang/Rewrite/Core/Rewriter.h"
-#include "clang/Rewrite/Frontend/Rewriters.h"
-#include "llvm/Support/Host.h"
-#include "llvm/Support/raw_ostream.h"
 
+using namespace std;
 using namespace clang;
+using namespace clang::driver;
+using namespace clang::tooling;
+using namespace llvm;
 
-// By implementing RecursiveASTVisitor, we can specify which AST nodes
-// we're interested in by overriding relevant methods.
-class MyASTVisitor : public RecursiveASTVisitor<MyASTVisitor> {
+Rewriter rewriter;
+int numFunctions = 0;
+
+
+class ExampleVisitor : public RecursiveASTVisitor<ExampleVisitor> {
+private:
+    ASTContext *astContext; // used for getting additional AST info
+
 public:
-    MyASTVisitor(Rewriter &R) : TheRewriter(R) {}
+    explicit ExampleVisitor(CompilerInstance *CI)
+    : astContext(&(CI->getASTContext())) // initialize private members
+    {
+        rewriter.setSourceMgr(astContext->getSourceManager(), astContext->getLangOpts());
+    }
+    virtual ~ExampleVisitor() {}
 
     bool VisitStmt(Stmt *s) {
         // Only care about If statements.
@@ -41,13 +44,13 @@ public:
             IfStmt *IfStatement = cast<IfStmt>(s);
             Stmt *Then = IfStatement->getThen();
 
-            TheRewriter.InsertText(Then->getBeginLoc().getLocWithOffset(1), "// the 'if' part", true,
-                                   true);
+            rewriter.InsertText(Then->getBeginLoc().getLocWithOffset(1), "// the 'if' part", true,
+                                true);
 
             Stmt *Else = IfStatement->getElse();
             if (Else)
-                TheRewriter.InsertText(Else->getEndLoc().getLocWithOffset(1), "// the 'else' part",
-                                       true, true);
+                rewriter.InsertText(Else->getEndLoc().getLocWithOffset(1), "// the 'else' part",
+                                    true, true);
         }
 
         return true;
@@ -71,94 +74,88 @@ public:
             SSBefore << "// Begin function " << FuncName << " returning " << TypeStr
             << "";
             SourceLocation ST = FuncBody->getSourceRange().getBegin().getLocWithOffset(1);
-            TheRewriter.InsertText(ST, SSBefore.str(), true, true);
+            rewriter.InsertText(ST, SSBefore.str(), true, true);
 
             // And after
-//            std::stringstream SSAfter;
-//            SSAfter << "// End function " << FuncName;
-//            ST = FuncBody->getEndLoc().getLocWithOffset(1);
-//            TheRewriter.InsertText(ST, SSAfter.str(), true, true);
+            //            std::stringstream SSAfter;
+            //            SSAfter << "// End function " << FuncName;
+            //            ST = FuncBody->getEndLoc().getLocWithOffset(1);
+            //            rewriter.InsertText(ST, SSAfter.str(), true, true);
         }
 
         return true;
     }
 
-private:
-    Rewriter &TheRewriter;
+    /*
+     virtual bool VisitReturnStmt(ReturnStmt *ret) {
+     rewriter.ReplaceText(ret->getRetValue()->getLocStart(), 6, "val");
+     errs() << "** Rewrote ReturnStmt\n";
+     return true;
+     }
+
+     virtual bool VisitCallExpr(CallExpr *call) {
+     rewriter.ReplaceText(call->getLocStart(), 7, "add5");
+     errs() << "** Rewrote function call\n";
+     return true;
+     }
+     */
 };
 
-// Implementation of the ASTConsumer interface for reading an AST produced
-// by the Clang parser.
-class MyASTConsumer : public ASTConsumer {
+
+
+class ExampleASTConsumer : public ASTConsumer {
+private:
+    ExampleVisitor *visitor; // doesn't have to be private
+
 public:
-    MyASTConsumer(Rewriter &R) : Visitor(R) {}
+    // override the constructor in order to pass CI
+    explicit ExampleASTConsumer(CompilerInstance *CI)
+    : visitor(new ExampleVisitor(CI)) // initialize the visitor
+    { }
 
-    // Override the method that gets called for each parsed top-level
-    // declaration.
-    virtual bool HandleTopLevelDecl(DeclGroupRef DR) {
-        for (DeclGroupRef::iterator b = DR.begin(), e = DR.end(); b != e; ++b)
-            // Traverse the declaration using our AST visitor.
-            Visitor.TraverseDecl(*b);
-        return true;
+    // override this to call our ExampleVisitor on the entire source file
+    virtual void HandleTranslationUnit(ASTContext &Context) {
+        /* we can use ASTContext to get the TranslationUnitDecl, which is
+         a single Decl that collectively represents the entire source file */
+        visitor->TraverseDecl(Context.getTranslationUnitDecl());
     }
 
-private:
-    MyASTVisitor Visitor;
+    /*
+     // override this to call our ExampleVisitor on each top-level Decl
+     virtual bool HandleTopLevelDecl(DeclGroupRef DG) {
+     // a DeclGroupRef may have multiple Decls, so we iterate through each one
+     for (DeclGroupRef::iterator i = DG.begin(), e = DG.end(); i != e; i++) {
+     Decl *D = *i;
+     visitor->TraverseDecl(D); // recursively visit each AST node in Decl "D"
+     }
+     return true;
+     }
+     */
 };
 
-int main(int argc, char *argv[]) {
-    if (argc != 2) {
-        llvm::errs() << "Usage: rewritersample <filename>\n";
-        return 1;
+
+
+class ExampleFrontendAction : public ASTFrontendAction {
+public:
+    virtual std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI, StringRef file) {
+        return (std::unique_ptr<ASTConsumer>)new ExampleASTConsumer(&CI); // pass CI pointer to ASTConsumer
     }
+};
 
-    // CompilerInstance will hold the instance of the Clang compiler for us,
-    // managing the various objects needed to run the compiler.
-    CompilerInstance TheCompInst;
-    TheCompInst.createDiagnostics();
 
-    LangOptions &lo = TheCompInst.getLangOpts();
-    lo.CPlusPlus = 1;
 
-    // Initialize target info with the default triple for our platform.
-    auto TO = std::make_shared<TargetOptions>();
-    TO->Triple = llvm::sys::getDefaultTargetTriple();
-    TargetInfo *TI =
-    TargetInfo::CreateTargetInfo(TheCompInst.getDiagnostics(), TO);
-    TheCompInst.setTarget(TI);
+int main(int argc, const char **argv) {
+    // parse the command-line args passed to your code
+    CommonOptionsParser op(argc, argv, *new llvm::cl::OptionCategory("test"));
+    // create a new Clang Tool instance (a LibTooling environment)
+    ClangTool Tool(op.getCompilations(), op.getSourcePathList());
 
-    TheCompInst.createFileManager();
-    FileManager &FileMgr = TheCompInst.getFileManager();
-    TheCompInst.createSourceManager(FileMgr);
-    SourceManager &SourceMgr = TheCompInst.getSourceManager();
-    TheCompInst.createPreprocessor(TU_Module);
-    TheCompInst.createASTContext();
+    // run the Clang Tool, creating a new FrontendAction (explained below)
+    int result = Tool.run(newFrontendActionFactory<ExampleFrontendAction>().get());
 
-    // A Rewriter helps us manage the code rewriting task.
-    Rewriter TheRewriter;
-    TheRewriter.setSourceMgr(SourceMgr, TheCompInst.getLangOpts());
-
-    // Set the main file handled by the source manager to the input file.
-    const FileEntry *FileIn = FileMgr.getFile(argv[1]);
-    SourceMgr.setMainFileID(
-                            SourceMgr.createFileID(FileIn, SourceLocation(), SrcMgr::C_User));
-    TheCompInst.getDiagnosticClient().BeginSourceFile(
-                                                      TheCompInst.getLangOpts(), &TheCompInst.getPreprocessor());
-
-    // Create an AST consumer instance which is going to get called by
-    // ParseAST.
-    MyASTConsumer TheConsumer(TheRewriter);
-
-    // Parse the file to AST, registering our consumer as the AST consumer.
-    ParseAST(TheCompInst.getPreprocessor(), &TheConsumer,
-             TheCompInst.getASTContext());
-
-    // At this point the rewriter's buffer should be full with the rewritten
-    // file contents.
-    const RewriteBuffer *RewriteBuf =
-    TheRewriter.getRewriteBufferFor(SourceMgr.getMainFileID());
-    llvm::outs() << std::string(RewriteBuf->begin(), RewriteBuf->end());
-
-    return 0;
+    //    errs() << "\nFound " << numFunctions << " functions.\n\n";
+    // print out the rewritten source code ("rewriter" is a global var.)
+    rewriter.getEditBuffer(rewriter.getSourceMgr().getMainFileID()).write(errs());
+    return result;
 }
 
